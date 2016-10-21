@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import logging
 
 from lxml import etree
 from sqlalchemy.orm.exc import NoResultFound
@@ -12,6 +13,10 @@ from db.wiki_tables import User
 
 # TODO deal with these sessions!
 session = Session()
+LOGGER = logging.getLogger('xml-parser')
+LOGGER.addHandler(logging.FileHandler(
+    '/home/zlira/wiki_pageviews/logs/xml_parser.log'
+))
 
 
 # helpers
@@ -78,12 +83,20 @@ class DumpXmlParser:
             element_iter = etree.iterparse(xml_dump)
             for event, element in element_iter:
                 if tag_wo_ns(element) == 'page':
-                    page_counter += 1
-                    with fading_element(element) as page:
-                        self.process_page(page)
-                        self.session.commit()
-                    if page_limit and page_counter >= page_limit:
-                        break
+                    try:
+                        page_counter += 1
+                        with fading_element(element) as page:
+                            self.process_page(page)
+                            self.session.commit()
+
+                            # clean session to prevent memory leaks?
+                            self.session.expunge_all()
+                        if page_limit and page_counter >= page_limit:
+                            break
+                    except Exception:
+                        page_title = find_in_default_ns(element, 'title')
+                        LOGGER.exception('Error while parsing element: %s',
+                                         page_title.text)
 
     def process_element(self, element, obj, special_cases):
         for child in element.iterchildren():
@@ -113,6 +126,7 @@ class DumpXmlParser:
         self.curr_page.revisions.append(self.curr_revision)
         print(self.curr_revision.timestamp)
         self.session.add(self.curr_revision)
+        revision.clear()
 
     def process_text(self, text):
         text_size = 0 if text.text is None else len(text.text)
@@ -145,4 +159,4 @@ if __name__ == '__main__':
         'ukwiki-20161001-pages-meta-history.xml'
     )
     parser = DumpXmlParser(file_path)
-    parser.parse(2)
+    parser.parse()

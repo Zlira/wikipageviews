@@ -39,6 +39,8 @@ class Revision(Base):
 
     # foreign keys
     page_id = Column(Integer, ForeignKey('pages.id'))
+    # TODO WARNING I've droped this foreing key in db becuase
+    # it caused errors during parsing should chage that later
     parentid = Column(Integer, ForeignKey('revisions.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
     text_id = Column(Integer, ForeignKey('texts.id'))
