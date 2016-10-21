@@ -1,3 +1,4 @@
+import argparse
 from contextlib import contextmanager
 import logging
 
@@ -5,6 +6,7 @@ from lxml import etree
 from sqlalchemy.orm.exc import NoResultFound
 
 from db.db_conf import Session
+from db.db_conf import TestSession
 from db.wiki_tables import Page
 from db.wiki_tables import Revision
 from db.wiki_tables import Text
@@ -18,6 +20,16 @@ LOGGER.addHandler(logging.FileHandler(
     '/home/zlira/wiki_pageviews/logs/xml_parser.log'
 ))
 
+
+def get_arg_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-n", "--page-number", type=int, help="Number of pages to parse"
+    )
+    parser.add_argument(
+        "-t", "--test", action="store_true", help="Use test database"
+    )
+    return parser
 
 # helpers
 
@@ -67,15 +79,16 @@ def get_or_create_by_id(session, model, id_, **kwargs):
         session.add(obj)
         session.flush()
         session.refresh(obj)
+        return obj, True
 
 
 class DumpXmlParser:
-    def __init__(self, file_path):
+    def __init__(self, file_path, session_maker):
         self.file_path = file_path
         self.curr_page = None
         self.curr_revision = None
         self.text_id_counter = 0
-        self.session = Session()
+        self.session = session_maker()
 
     def parse(self, page_limit=None):
         page_counter = 0
@@ -84,7 +97,6 @@ class DumpXmlParser:
             for event, element in element_iter:
                 if tag_wo_ns(element) == 'page':
                     try:
-                        page_counter += 1
                         with fading_element(element) as page:
                             self.process_page(page)
                             self.session.commit()
@@ -97,6 +109,9 @@ class DumpXmlParser:
                         page_title = find_in_default_ns(element, 'title')
                         LOGGER.exception('Error while parsing element: %s',
                                          page_title.text)
+                    else:
+                        # count olny if the page was added
+                        page_counter += 1
 
     def process_element(self, element, obj, special_cases):
         for child in element.iterchildren():
@@ -145,6 +160,9 @@ class DumpXmlParser:
                         .filter_by(id=id_.text)
                         .one())
             except NoResultFound:
+                # FIXME there's one user with id 0 and this
+                # doesn't work uless NO_AUTO_VALUE_ON_ZERO is added
+                # to session sql_mode
                 user = User(id=id_.text, username=username.text)
                 self.session.add(user)
                 self.session.flush()
@@ -153,10 +171,13 @@ class DumpXmlParser:
 
 
 if __name__ == '__main__':
-    pass
     file_path = (
         '/media/storage/zlira/wiki/dumps/'
         'ukwiki-20161001-pages-meta-history.xml'
     )
-    parser = DumpXmlParser(file_path)
-    parser.parse()
+    arg_parser = get_arg_parser()
+    args = arg_parser.parse_args()
+    parser = DumpXmlParser(
+        file_path, session_maker=Session if not args.test else TestSession
+    )
+    parser.parse(page_limit=args.page_number)
