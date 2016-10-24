@@ -10,7 +10,6 @@ from db.db_conf import TestSession
 from db.wiki_tables import Page
 from db.wiki_tables import Revision
 from db.wiki_tables import Text
-from db.wiki_tables import User
 
 
 # TODO deal with these sessions!
@@ -19,6 +18,7 @@ LOGGER = logging.getLogger('xml-parser')
 LOGGER.addHandler(logging.FileHandler(
     '/home/zlira/wiki_pageviews/logs/xml_parser.log'
 ))
+LOGGER.addHandler(logging.StreamHandler())
 
 
 def get_arg_parser():
@@ -63,23 +63,6 @@ def get_table_colums(obj):
     They may be different for model attributes that correspond
     to those columns (but currently aren't)."""
     return set(obj.__table__.columns.keys())
-
-
-def get_or_create_by_id(session, model, id_, **kwargs):
-    """Tries to get an object from db using id, if it doesn't
-    exist creates a new object using kwargs.
-
-    Returns two-tuple: object, created
-    """
-    try:
-        obj = session.query(model).filter_by(id=id_).one()
-        return obj, False
-    except NoResultFound:
-        obj = model(id=id_, **kwargs)
-        session.add(obj)
-        session.flush()
-        session.refresh(obj)
-        return obj, True
 
 
 class DumpXmlParser:
@@ -151,23 +134,10 @@ class DumpXmlParser:
     def process_contributor(self, contributor):
         ip = find_in_default_ns(contributor, 'ip')
         id_ = find_in_default_ns(contributor, 'id')
-        username = find_in_default_ns(contributor, 'username')
         if ip is not None:
             self.curr_revision.user_ip = ip.text
         elif id_ is not None:
-            try:
-                user = (self.session.query(User)
-                        .filter_by(id=id_.text)
-                        .one())
-            except NoResultFound:
-                # FIXME there's one user with id 0 and this
-                # doesn't work uless NO_AUTO_VALUE_ON_ZERO is added
-                # to session sql_mode
-                user = User(id=id_.text, username=username.text)
-                self.session.add(user)
-                self.session.flush()
-                self.session.refresh(user)
-            self.curr_revision.user = user
+            self.curr_revision.user_id = id_.text
 
 
 if __name__ == '__main__':

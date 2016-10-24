@@ -42,7 +42,7 @@ class Revision(Base):
     # TODO WARNING I've droped this foreing key in db becuase
     # it caused errors during parsing should chage that later
     parentid = Column(Integer, ForeignKey('revisions.id'))
-    user_id = Column(Integer, ForeignKey('users.id'))
+    user_id = Column(Integer)
     text_id = Column(Integer, ForeignKey('texts.id'))
 
     # relations
@@ -50,7 +50,6 @@ class Revision(Base):
         "Page", back_populates='revisions'
     )
     child = relationship('Revision', uselist=False)
-    user = relationship('User', back_populates='revision')
     text = relationship('Text', back_populates='revision')
 
     def __repr__(self):
@@ -74,21 +73,6 @@ class Text(Base):
     def __repr__(self):
         return 'Text of size {text_size} of revision {revision_id}'.format(
             text_size=self.text_size, revision_id=self.revision.id
-        )
-
-
-class User(Base):
-    __tablename__ = 'users'
-
-    id = Column(Integer, primary_key=True)
-    username = Column(TextType)
-
-    # relations
-    revision = relationship('Revision', back_populates='user')
-
-    def __repr__(self):
-        return 'User {username} ({id})'.format(
-            username=self.username, id=self.id
         )
 
 
