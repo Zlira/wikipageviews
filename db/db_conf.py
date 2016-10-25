@@ -9,7 +9,7 @@ engine_template = (
 db_name = 'wiki'
 test_db_name = 'wiki_test'
 engine = create_engine(
-    engine_template.format(db_name=db_name)
+    engine_template.format(db_name=db_name), echo=True
 )
 test_engine = create_engine(
     engine_template.format(db_name=test_db_name)

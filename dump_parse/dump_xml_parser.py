@@ -1,9 +1,8 @@
 import argparse
-from contextlib import contextmanager
+from collections import namedtuple
 import logging
 
 from lxml import etree
-from sqlalchemy.orm.exc import NoResultFound
 
 from db.db_conf import Session
 from db.db_conf import TestSession
@@ -18,7 +17,13 @@ LOGGER = logging.getLogger('xml-parser')
 LOGGER.addHandler(logging.FileHandler(
     '/home/zlira/wiki_pageviews/logs/xml_parser.log'
 ))
-LOGGER.addHandler(logging.StreamHandler())
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+LOGGER.addHandler(stream_handler)
+LOGGER.setLevel(logging.INFO)
+logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+
+tagged_event = namedtuple('TaggedEvent', ['event', 'tag'])
 
 
 def get_arg_parser():
@@ -34,14 +39,6 @@ def get_arg_parser():
 # helpers
 
 
-@contextmanager
-def fading_element(element):
-    """Context manager used to clear xml element after
-    prcessing it."""
-    yield element
-    element.clear()
-
-
 def tag_wo_ns(element):
     """Strips the namespace from tag name if it's present"""
     return element.tag.split('}')[-1]
@@ -55,6 +52,15 @@ def find_in_default_ns(element, tag):
     return element.find('defualt:' + tag, namespaces=nsmap)
 
 
+def get_tagged_event(event, element):
+    """
+    Given (event, element) returned by iterative parser
+    returns a tuple of unchanged event and stripped
+    elemnt's tag.
+    """
+    return tagged_event(event, tag_wo_ns(element))
+
+
 # TODO move helpers related to db into db package
 
 def get_table_colums(obj):
@@ -65,79 +71,104 @@ def get_table_colums(obj):
     return set(obj.__table__.columns.keys())
 
 
-class DumpXmlParser:
-    def __init__(self, file_path, session_maker):
-        self.file_path = file_path
-        self.curr_page = None
-        self.curr_revision = None
-        self.text_id_counter = 0
-        self.session = session_maker()
+def set_model_attr_from_xml_elem(instance, xml_elem):
+    """
+    Given 'instance' of an SQLAlchemy model and xml_elem
+    if that model has an attribute with the same naem as
+    xml_elem's tag sets that attribute on an instance to
+    xml_elem's text.
+    """
+    stripped_tag = tag_wo_ns(xml_elem)
+    if stripped_tag in get_table_colums(instance):
+        setattr(instance, stripped_tag, xml_elem.text)
 
-    def parse(self, page_limit=None):
-        page_counter = 0
-        with open(self.file_path, 'rb') as xml_dump:
-            element_iter = etree.iterparse(xml_dump)
-            for event, element in element_iter:
-                if tag_wo_ns(element) == 'page':
-                    try:
-                        with fading_element(element) as page:
-                            self.process_page(page)
-                            self.session.commit()
 
-                            # clean session to prevent memory leaks?
-                            self.session.expunge_all()
-                        if page_limit and page_counter >= page_limit:
-                            break
-                    except Exception:
-                        page_title = find_in_default_ns(element, 'title')
-                        LOGGER.exception('Error while parsing element: %s',
-                                         page_title.text)
-                    else:
-                        # count olny if the page was added
-                        page_counter += 1
+def set_revision_text(rev_instance, xml_text):
+    text_size = 0 if xml_text.text is None else len(xml_text.text)
+    text_obj = Text(text_size=text_size)
+    rev_instance.text = text_obj
 
-    def process_element(self, element, obj, special_cases):
-        for child in element.iterchildren():
-            stripped_tag = tag_wo_ns(child)
-            if stripped_tag in get_table_colums(obj):
-                setattr(obj, stripped_tag, child.text)
-            elif stripped_tag in special_cases:
-                getattr(self, special_cases[stripped_tag])(child)
-        return obj
 
-    def process_page(self, page):
-        self.curr_page = Page()
-        self.process_element(page, self.curr_page, {
-            'revision': 'process_revision',
-        })
+def set_revision_contributor(rev_instance, xml_contributor):
+    ip = find_in_default_ns(xml_contributor, 'ip')
+    id_ = find_in_default_ns(xml_contributor, 'id')
+    if ip is not None:
+        rev_instance.user_ip = ip.text
+    elif id_ is not None:
+        rev_instance.user_id = id_.text
 
-        self.session.add(self.curr_page)
-        # TODO remove this
-        print(self.curr_page)
 
-    def process_revision(self, revision):
-        self.curr_revision = Revision()
-        self.process_element(revision, self.curr_revision, {
-            'text': 'process_text',
-            'contributor': 'process_contributor',
-        })
-        self.curr_page.revisions.append(self.curr_revision)
-        print(self.curr_revision.timestamp)
-        self.session.add(self.curr_revision)
-        revision.clear()
+def process_page_xml(xml_eater):
+    """
+    xml_eater is an iterative parser returned by etree.iterparse
+    it should be at the point when ('start', 'page') event have
+    just been triggered. The function consumes it until the Page
+    object is fully built (except revisions).
+    Returns constructed page.
+    """
+    trigger_events = {
+        tagged_event(event, tag): False for event, tag in
+        (('end', 'id'), ('end', 'title'), ('end', 'ns'))
+    }
+    page = Page()
+    for event, element in xml_eater:
+        tagged_event_ = get_tagged_event(event, element)
+        if tagged_event_ in trigger_events:
+            set_model_attr_from_xml_elem(page, element)
+            trigger_events[tagged_event_] = True
+        if all(trigger_events.values()):
+            return page
 
-    def process_text(self, text):
-        text_size = 0 if text.text is None else len(text.text)
-        text_obj = Text(text_size=text_size)
-        self.curr_revision.text = text_obj
 
-    def process_contributor(self, contributor):
-        ip = find_in_default_ns(contributor, 'ip')
-        id_ = find_in_default_ns(contributor, 'id')
-        if ip is not None:
-            self.curr_revision.user_ip = ip.text
-        elif id_ is not None:
-            self.curr_revision.user_id = id_.text
+def process_revision_xml(xml_eater):
+    revision = Revision()
+    end_handlers = {
+        elem_tag: set_revision_contributor for elem_tag in
+        ('id', 'comment', 'timestamp', 'parentid', 'comment', )
+    }
+    end_handlers['contributor'] = set_revision_contributor
+    end_handlers['text'] = set_revision_text
+    for event, element in xml_eater:
+        if event == 'end':
+            stripped_tag = tag_wo_ns(element)
+            if stripped_tag == 'revision':
+                element.clear()
+                return revision
+            elif stripped_tag in end_handlers:
+                end_handlers[stripped_tag](
+                    revision, element
+                )
+
+
+def parse_xml(xml_file, session_maker, page_limit=None):
+    session = session_maker()
+    xml_eater = etree.iterparse(xml_file, ('start', 'end'))
+    page_counter = 0
+    for event, element in xml_eater:
+        tagged_event_ = get_tagged_event(event, element)
+        if tagged_event_ == tagged_event('start', 'page'):
+            page = process_page_xml(xml_eater)
+            session.add(page)
+        elif tagged_event_ == tagged_event('start', 'revision'):
+            revision = process_revision_xml(xml_eater)
+            page.revisions.append(revision)
+        elif tagged_event_ == tagged_event('end', 'page'):
+            page_title = find_in_default_ns(element, 'title').text
+            try:
+                session.commit()
+                session.expunge_all()
+                page_counter += 1
+                LOGGER.info('Finished processing page: %s', page_title)
+            except Exception:
+                session.rollback()
+                LOGGER.exception('Error while parsing element: %s', page_title)
+            finally:
+                element.clear()
+                # clear previous elements
+                while element.getprevious() is not None:
+                    del element.getparent()[0]
+        if page_limit and page_counter >= page_limit:
+            return
 
 
 if __name__ == '__main__':
@@ -147,7 +178,9 @@ if __name__ == '__main__':
     )
     arg_parser = get_arg_parser()
     args = arg_parser.parse_args()
-    parser = DumpXmlParser(
-        file_path, session_maker=Session if not args.test else TestSession
-    )
-    parser.parse(page_limit=args.page_number)
+    with open(file_path, 'rb') as xml_file:
+        parse_xml(
+            xml_file,
+            session_maker=Session if not args.test else TestSession,
+            page_limit=args.page_number,
+        )
