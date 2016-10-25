@@ -43,36 +43,17 @@ class Revision(Base):
     # it caused errors during parsing should chage that later
     parentid = Column(Integer, ForeignKey('revisions.id'))
     user_id = Column(Integer)
-    text_id = Column(Integer, ForeignKey('texts.id'))
+    text_size = Column(Integer)
 
     # relations
     page = relationship(
         "Page", back_populates='revisions'
     )
     child = relationship('Revision', uselist=False)
-    text = relationship('Text', back_populates='revision')
 
     def __repr__(self):
         return 'Revision #{id} of page #{page_id} on {timestamp}'.format(
             id=self.id, page_id=self.page_id, timestamp=self.timestamp,
-        )
-
-
-class Text(Base):
-    __tablename__ = 'texts'
-
-    id = Column(Integer, primary_key=True)
-    # This should be empty for now only set text_size
-    text = Column(TextType)
-    text_size = Column(Integer)
-
-    # relationship
-    revision = relationship('Revision', uselist=False,
-                            back_populates='text')
-
-    def __repr__(self):
-        return 'Text of size {text_size} of revision {revision_id}'.format(
-            text_size=self.text_size, revision_id=self.revision.id
         )
 
 

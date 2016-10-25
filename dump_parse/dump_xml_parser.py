@@ -4,11 +4,12 @@ import logging
 
 from lxml import etree
 
+from db.db_conf import engine
+from db.db_conf import test_engine
 from db.db_conf import Session
 from db.db_conf import TestSession
 from db.wiki_tables import Page
 from db.wiki_tables import Revision
-from db.wiki_tables import Text
 
 
 # TODO deal with these sessions!
@@ -83,19 +84,30 @@ def set_model_attr_from_xml_elem(instance, xml_elem):
         setattr(instance, stripped_tag, xml_elem.text)
 
 
-def set_revision_text(rev_instance, xml_text):
-    text_size = 0 if xml_text.text is None else len(xml_text.text)
-    text_obj = Text(text_size=text_size)
-    rev_instance.text = text_obj
+def set_dict_item_from_xml_elem(dict_, xml_elem):
+    dict_[tag_wo_ns(xml_elem)] = xml_elem.text
 
 
-def set_revision_contributor(rev_instance, xml_contributor):
+def set_revision_text(rev_dict, xml_text):
+    rev_dict['text_size'] = (
+        0 if xml_text.text is None else len(xml_text.text)
+    )
+
+
+def set_revision_contributor(rev_dict, xml_contributor):
     ip = find_in_default_ns(xml_contributor, 'ip')
     id_ = find_in_default_ns(xml_contributor, 'id')
-    if ip is not None:
-        rev_instance.user_ip = ip.text
-    elif id_ is not None:
-        rev_instance.user_id = id_.text
+    rev_dict['user_ip'] = None if ip is None else ip.text
+    rev_dict['user_id'] = None if id_ is None else id_.text
+
+
+def set_revision_id(rev_dict, xml_id):
+    # TODO 'id' can be an attribute of revision or contributor
+    # but this is messy. Maybe think about adapting function
+    # from PythonCookbook to this case
+    parent = xml_id.getparent()
+    if tag_wo_ns(parent) == 'revision':
+        rev_dict['id'] = xml_id.text
 
 
 def process_page_xml(xml_eater):
@@ -121,17 +133,23 @@ def process_page_xml(xml_eater):
 
 
 def process_revision_xml(xml_eater):
-    revision = Revision()
+    revision = {}
     end_handlers = {
-        elem_tag: set_revision_contributor for elem_tag in
-        ('id', 'comment', 'timestamp', 'parentid', 'comment', )
+        elem_tag: set_dict_item_from_xml_elem for elem_tag in
+        ('comment', 'timestamp', 'parentid', 'comment', )
     }
     end_handlers['contributor'] = set_revision_contributor
     end_handlers['text'] = set_revision_text
+    end_handlers['id'] = set_revision_id
     for event, element in xml_eater:
         if event == 'end':
             stripped_tag = tag_wo_ns(element)
             if stripped_tag == 'revision':
+                # comment tag can be missing but it's needed
+                # to insert into db and defualtdict isn't
+                # working here
+                revision['comment'] = revision.get('comment')
+
                 element.clear()
                 return revision
             elif stripped_tag in end_handlers:
@@ -140,23 +158,29 @@ def process_revision_xml(xml_eater):
                 )
 
 
-def parse_xml(xml_file, session_maker, page_limit=None):
+def parse_xml(xml_file, session_maker, engine, page_limit=None):
     session = session_maker()
     xml_eater = etree.iterparse(xml_file, ('start', 'end'))
     page_counter = 0
+    revisions = []
     for event, element in xml_eater:
         tagged_event_ = get_tagged_event(event, element)
         if tagged_event_ == tagged_event('start', 'page'):
             page = process_page_xml(xml_eater)
             session.add(page)
         elif tagged_event_ == tagged_event('start', 'revision'):
-            revision = process_revision_xml(xml_eater)
-            page.revisions.append(revision)
+            rev = process_revision_xml(xml_eater)
+            rev['page_id'] = page.id
+            revisions.append(rev)
         elif tagged_event_ == tagged_event('end', 'page'):
             page_title = find_in_default_ns(element, 'title').text
             try:
                 session.commit()
                 session.expunge_all()
+
+                engine.execute(
+                    Revision.__table__.insert(), revisions
+                )
                 page_counter += 1
                 LOGGER.info('Finished processing page: %s', page_title)
             except Exception:
@@ -164,6 +188,7 @@ def parse_xml(xml_file, session_maker, page_limit=None):
                 LOGGER.exception('Error while parsing element: %s', page_title)
             finally:
                 element.clear()
+                revisions = []
                 # clear previous elements
                 while element.getprevious() is not None:
                     del element.getparent()[0]
@@ -182,5 +207,6 @@ if __name__ == '__main__':
         parse_xml(
             xml_file,
             session_maker=Session if not args.test else TestSession,
+            engine=engine if not args.test else test_engine,
             page_limit=args.page_number,
         )
