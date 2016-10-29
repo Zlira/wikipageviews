@@ -136,7 +136,7 @@ def process_revision_xml(xml_eater):
     revision = {}
     end_handlers = {
         elem_tag: set_dict_item_from_xml_elem for elem_tag in
-        ('comment', 'timestamp', 'parentid', 'comment', )
+        ('comment', 'timestamp', 'parentid', )
     }
     end_handlers['contributor'] = set_revision_contributor
     end_handlers['text'] = set_revision_text
@@ -178,6 +178,7 @@ def parse_xml(xml_file, session_maker, engine, page_limit=None):
                 session.commit()
                 session.expunge_all()
 
+                # FIXME parentid is not included for some reason!
                 engine.execute(
                     Revision.__table__.insert(), revisions
                 )

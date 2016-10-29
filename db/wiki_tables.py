@@ -41,7 +41,7 @@ class Revision(Base):
     page_id = Column(Integer, ForeignKey('pages.id'))
     # TODO WARNING I've droped this foreing key in db becuase
     # it caused errors during parsing should chage that later
-    parentid = Column(Integer, ForeignKey('revisions.id'))
+    parentid = Column(Integer)
     user_id = Column(Integer)
     text_size = Column(Integer)
 
@@ -49,7 +49,7 @@ class Revision(Base):
     page = relationship(
         "Page", back_populates='revisions'
     )
-    child = relationship('Revision', uselist=False)
+    # child = relationship('Revision', uselist=False)
 
     def __repr__(self):
         return 'Revision #{id} of page #{page_id} on {timestamp}'.format(
